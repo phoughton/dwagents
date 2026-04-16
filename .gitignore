@@ -131,3 +131,6 @@ dmypy.json
 
 ttyrecord
 ttylog
+output/
+bug_reports/
+examples/

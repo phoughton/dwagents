@@ -181,22 +181,24 @@ class ChatDoublewordBatch(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs,
     ) -> ChatResult:
-        """Sync wrapper — runs the async path in an event loop."""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
+        """Sync wrapper — runs the async path in a new event loop.
 
-        if loop and loop.is_running():
-            import nest_asyncio
-            nest_asyncio.apply()
-            return loop.run_until_complete(
-                self._agenerate(messages, stop=stop, **kwargs)
-            )
-        else:
-            return asyncio.run(
-                self._agenerate(messages, stop=stop, **kwargs)
-            )
+        If called from within a running event loop (e.g., LangGraph inside
+        an async context), runs the coroutine in a separate thread to avoid
+        nested event loop issues.
+        """
+        coro = self._agenerate(messages, stop=stop, **kwargs)
+
+        try:
+            asyncio.get_running_loop()
+            # We're inside a running loop — run in a new thread with its own loop
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(asyncio.run, coro)
+                return future.result()
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run directly
+            return asyncio.run(coro)
 
     async def _agenerate(
         self,

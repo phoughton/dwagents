@@ -141,7 +141,7 @@ from dwagents import create_supervisor
 
 
 async def main():
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "filesystem": {
                 "transport": "stdio",
@@ -149,21 +149,21 @@ async def main():
                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
             },
         }
-    ) as mcp_client:
-        tools = mcp_client.get_tools()
+    )
+    tools = await client.get_tools()
 
-        agent = create_supervisor(
-            tools=tools,
-            system_prompt=(
-                "You are a file management assistant. "
-                "Use the filesystem tools to read, write, and organize files."
-            ),
-        )
+    agent = create_supervisor(
+        tools=tools,
+        system_prompt=(
+            "You are a file management assistant. "
+            "Use the filesystem tools to read, write, and organize files."
+        ),
+    )
 
-        result = agent.invoke({
-            "messages": [{"role": "user", "content": "List the files in /tmp/workspace and summarize any .txt files"}]
-        })
-        print(result["messages"][-1].content)
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": "List the files in /tmp/workspace and summarize any .txt files"}]
+    })
+    print(result["messages"][-1].content)
 
 
 asyncio.run(main())
@@ -190,7 +190,7 @@ def notify_slack(channel: str, message: str) -> str:
 
 
 async def main():
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "filesystem": {
                 "transport": "stdio",
@@ -202,18 +202,18 @@ async def main():
                 "url": "http://localhost:8080/mcp",
             },
         }
-    ) as mcp_client:
-        mcp_tools = mcp_client.get_tools()
+    )
+    mcp_tools = await client.get_tools()
 
-        agent = create_supervisor(
-            tools=mcp_tools + [notify_slack],
-            system_prompt="You are a data ops agent with access to files, a database, and Slack.",
-        )
+    agent = create_supervisor(
+        tools=mcp_tools + [notify_slack],
+        system_prompt="You are a data ops agent with access to files, a database, and Slack.",
+    )
 
-        result = agent.invoke({
-            "messages": [{"role": "user", "content": "Check the CSV files for anomalies, query the database for context, and post a summary to #data-alerts"}]
-        })
-        print(result["messages"][-1].content)
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": "Check the CSV files for anomalies, query the database for context, and post a summary to #data-alerts"}]
+    })
+    print(result["messages"][-1].content)
 
 
 asyncio.run(main())
@@ -231,7 +231,7 @@ from dwagents import create_supervisor
 
 
 async def main():
-    async with MultiServerMCPClient(
+    client = MultiServerMCPClient(
         {
             "inventory": {
                 "transport": "streamable_http",
@@ -248,21 +248,21 @@ async def main():
                 },
             },
         }
-    ) as mcp_client:
-        tools = mcp_client.get_tools()
+    )
+    tools = await client.get_tools()
 
-        agent = create_supervisor(
-            tools=tools,
-            system_prompt=(
-                "You are a supply chain agent. Use the inventory tools to check "
-                "stock levels and the CRM tools to look up customer orders."
-            ),
-        )
+    agent = create_supervisor(
+        tools=tools,
+        system_prompt=(
+            "You are a supply chain agent. Use the inventory tools to check "
+            "stock levels and the CRM tools to look up customer orders."
+        ),
+    )
 
-        result = agent.invoke({
-            "messages": [{"role": "user", "content": "Check if order #4521 can be fulfilled from current stock"}]
-        })
-        print(result["messages"][-1].content)
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": "Check if order #4521 can be fulfilled from current stock"}]
+    })
+    print(result["messages"][-1].content)
 
 
 asyncio.run(main())
