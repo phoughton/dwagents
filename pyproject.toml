@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dwagents"
+version = "0.1.0"
+description = "LangChain Deep Agents with doubleword.ai hybrid inference"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "langchain>=1.0",
+    "langgraph>=0.4",
+    "deepagents>=0.5",
+    "autobatcher>=0.6",
+    "langchain-mcp-adapters>=0.2",
+    "pydantic-settings>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

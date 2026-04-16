@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from autobatcher import BatchOpenAI
+from langchain_core.callbacks import CallbackManagerForLLMRun, AsyncCallbackManagerForLLMRun
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.outputs import ChatGeneration, ChatResult
+from pydantic import Field, PrivateAttr
+
+from dwagents.config import settings
+
+
+def _messages_to_openai(messages: list[BaseMessage]) -> list[dict[str, Any]]:
+    """Convert LangChain messages to OpenAI-format dicts."""
+    result = []
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            result.append({"role": "system", "content": msg.content})
+        elif isinstance(msg, HumanMessage):
+            result.append({"role": "user", "content": msg.content})
+        elif isinstance(msg, AIMessage):
+            entry: dict[str, Any] = {"role": "assistant", "content": msg.content}
+            if msg.tool_calls:
+                entry["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["args"]
+                            if isinstance(tc["args"], str)
+                            else __import__("json").dumps(tc["args"]),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            result.append(entry)
+        elif isinstance(msg, ToolMessage):
+            result.append({
+                "role": "tool",
+                "tool_call_id": msg.tool_call_id,
+                "content": msg.content,
+            })
+        else:
+            result.append({"role": "user", "content": str(msg.content)})
+    return result
+
+
+def _parse_tool_calls(raw_tool_calls: list) -> list[dict[str, Any]]:
+    """Convert OpenAI tool_calls to LangChain format."""
+    import json
+
+    result = []
+    for tc in raw_tool_calls:
+        func = tc.function
+        args_str = func.arguments
+        try:
+            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+        except json.JSONDecodeError:
+            args = args_str
+        result.append({
+            "id": tc.id,
+            "name": func.name,
+            "args": args,
+        })
+    return result
+
+
+def _completion_to_chat_result(completion) -> ChatResult:
+    """Convert an OpenAI ChatCompletion to a LangChain ChatResult."""
+    choice = completion.choices[0]
+    message = choice.message
+
+    tool_calls = []
+    if message.tool_calls:
+        tool_calls = _parse_tool_calls(message.tool_calls)
+
+    ai_message = AIMessage(
+        content=message.content or "",
+        tool_calls=tool_calls,
+        response_metadata={
+            "finish_reason": choice.finish_reason,
+            "model": completion.model,
+        },
+    )
+
+    generation = ChatGeneration(message=ai_message)
+    return ChatResult(
+        generations=[generation],
+        llm_output={
+            "model": completion.model,
+            "usage": dict(completion.usage) if completion.usage else {},
+        },
+    )
+
+
+class ChatDoublewordBatch(BaseChatModel):
+    """LangChain chat model wrapping doubleword.ai's autobatcher.
+
+    All requests go through BatchOpenAI, which transparently collects
+    them into batch API calls for 50-75% cost savings.
+    """
+
+    model_name: str = Field(default="")
+    api_key: str = Field(default="")
+    base_url: str = Field(default="")
+    batch_window_seconds: float = Field(default=10.0)
+    batch_size: int = Field(default=1000)
+    poll_interval_seconds: float = Field(default=5.0)
+    completion_window: str = Field(default="24h")
+
+    _client: BatchOpenAI | None = PrivateAttr(default=None)
+    _tools: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+
+    def __init__(self, **kwargs):
+        # Apply defaults from settings for any missing values
+        kwargs.setdefault("model_name", settings.model)
+        kwargs.setdefault("api_key", settings.api_key)
+        kwargs.setdefault("base_url", settings.base_url)
+        kwargs.setdefault("batch_window_seconds", settings.batch_window_seconds)
+        kwargs.setdefault("batch_size", settings.batch_size)
+        kwargs.setdefault("poll_interval_seconds", settings.poll_interval_seconds)
+        kwargs.setdefault("completion_window", settings.completion_window)
+        super().__init__(**kwargs)
+
+    def _get_client(self) -> BatchOpenAI:
+        if self._client is None:
+            self._client = BatchOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                batch_size=self.batch_size,
+                batch_window_seconds=self.batch_window_seconds,
+                poll_interval_seconds=self.poll_interval_seconds,
+                completion_window=self.completion_window,
+            )
+        return self._client
+
+    @property
+    def _llm_type(self) -> str:
+        return "doubleword-batch"
+
+    def bind_tools(self, tools: list, **kwargs) -> "ChatDoublewordBatch":
+        """Bind tool schemas for inclusion in requests."""
+        from langchain_core.utils.function_calling import convert_to_openai_tool
+
+        bound = self.model_copy()
+        bound._tools = [convert_to_openai_tool(t) for t in tools]
+        return bound
+
+    def _build_request_kwargs(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        openai_messages = _messages_to_openai(messages)
+        request: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": openai_messages,
+        }
+        if stop:
+            request["stop"] = stop
+        if self._tools:
+            request["tools"] = self._tools
+        request.update(kwargs)
+        return request
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs,
+    ) -> ChatResult:
+        """Sync wrapper — runs the async path in an event loop."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import nest_asyncio
+            nest_asyncio.apply()
+            return loop.run_until_complete(
+                self._agenerate(messages, stop=stop, **kwargs)
+            )
+        else:
+            return asyncio.run(
+                self._agenerate(messages, stop=stop, **kwargs)
+            )
+
+    async def _agenerate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs,
+    ) -> ChatResult:
+        """Primary async path — sends request through BatchOpenAI."""
+        client = self._get_client()
+        request_kwargs = self._build_request_kwargs(messages, stop, **kwargs)
+        completion = await client.chat.completions.create(**request_kwargs)
+        return _completion_to_chat_result(completion)
+
+    async def aclose(self) -> None:
+        """Close the underlying BatchOpenAI client."""
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
