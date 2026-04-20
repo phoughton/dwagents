@@ -126,6 +126,79 @@ class TestCompletionToChatResult:
         assert msg.tool_calls[0]["args"] == {"expression": "2+2"}
 
 
+class TestOpenAICompatPatch:
+    """The doubleword batch API returns finish_reason=None on some tool-calling
+    responses. Without the patch, autobatcher's parse loop raises and orphans
+    every sibling request in the batch as 'No result for request X'."""
+
+    def test_none_finish_reason_coerced_to_tool_calls_when_tool_call_present(self):
+        from openai.types.chat import ChatCompletion
+
+        payload = {
+            "id": "chatcmpl-x",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": None,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "f", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        parsed = ChatCompletion.model_validate(payload)
+        assert parsed.choices[0].finish_reason == "tool_calls"
+
+    def test_none_finish_reason_coerced_to_stop_without_tool_calls(self):
+        from openai.types.chat import ChatCompletion
+
+        payload = {
+            "id": "chatcmpl-x",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": None,
+                    "message": {"role": "assistant", "content": "hi"},
+                }
+            ],
+        }
+        parsed = ChatCompletion.model_validate(payload)
+        assert parsed.choices[0].finish_reason == "stop"
+
+    def test_valid_finish_reason_untouched(self):
+        from openai.types.chat import ChatCompletion
+
+        payload = {
+            "id": "chatcmpl-x",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "length",
+                    "message": {"role": "assistant", "content": "hi"},
+                }
+            ],
+        }
+        parsed = ChatCompletion.model_validate(payload)
+        assert parsed.choices[0].finish_reason == "length"
+
+
 class TestRealtimeModel:
     def test_creates_chat_openai(self):
         with patch.dict("os.environ", {"DOUBLEWORD_API_KEY": "test-key"}):

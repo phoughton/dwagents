@@ -5,9 +5,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dwagents"
 version = "0.1.0"
-description = "LangChain Deep Agents with doubleword.ai hybrid inference"
+description = "Parallel batched LangChain deep agents on doubleword.ai inference, with MCP tools and per-agent observability"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [
+    { name = "Pete Houghton", email = "pete@investigatingsoftware.co.uk" },
+]
+keywords = [
+    "langchain",
+    "langgraph",
+    "deepagents",
+    "agents",
+    "mcp",
+    "doubleword",
+    "batch",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
@@ -23,7 +47,16 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "build>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/phoughton/dwagents"
+Repository = "https://github.com/phoughton/dwagents"
+Issues = "https://github.com/phoughton/dwagents/issues"
+
+[project.scripts]
+dwagents = "dwagents.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

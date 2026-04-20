@@ -2,11 +2,15 @@
 
 LangChain Deep Agents with [doubleword.ai](https://doubleword.ai) batch inference. All LLM calls go through doubleword.ai's autobatcher for 50-75% cost savings. Designed for background agents where cost matters more than latency.
 
-Built on [LangChain Deep Agents](https://github.com/langchain-ai/deepagents) and [autobatcher](https://github.com/doublewordai/autobatcher).
+Built on [LangChain Deep Agents](https://github.com/langchain-ai/deepagents) and Doubleword.ai's [autobatcher](https://github.com/doublewordai/autobatcher).
 
 ## Installation
 
 ```bash
+# From source (until the package is published to PyPI):
+pip install git+https://github.com/phoughton/dwagents.git
+
+# For development (after cloning the repo):
 pip install -e ".[dev]"
 ```
 
@@ -22,13 +26,102 @@ Optional settings (with defaults):
 
 ```bash
 export DOUBLEWORD_BASE_URL="https://api.doubleword.ai/v1/"
-export DOUBLEWORD_MODEL="gpt-4o"
+export DOUBLEWORD_MODEL="Qwen/Qwen3.5-397B-A17B-FP8"
 export DOUBLEWORD_BATCH_WINDOW_SECONDS="10.0"
 export DOUBLEWORD_BATCH_SIZE="1000"
-export DOUBLEWORD_COMPLETION_WINDOW="24h"
+export DOUBLEWORD_POLL_INTERVAL_SECONDS="5.0"
+export DOUBLEWORD_COMPLETION_WINDOW="1h"
 ```
 
+Every setting above can also be overridden by a CLI flag on `dwagents run` (see `dwagents run --help` for the full list, or the `examples/parallel_agents.py` template) or by a Python kwarg via `model_kwargs={"model_name": ..., "batch_size": ..., ...}` passed to `create_supervisor` or `run_agents_parallel`. Precedence is **CLI flag > env var > built-in default**. `--api-key` is available but prefer the env var — CLI flags can leak into shell history and `ps` output.
+
 ## Usage
+
+Most uses of this library want the **Parallel agents** pattern below or the **Command-line runner**. Skip to *Basic agent with tools* if you only need a single supervisor.
+
+### Parallel agents sharing one batch window
+
+`run_agents_parallel` spins up one supervisor per prompt and sends all of their LLM calls through a single shared batch client, so they collate into the same batch window. This is the high-leverage pattern for workloads where you have N independent tasks and want them all to ride one batch.
+
+```python
+import asyncio
+from dwagents import (
+    ToolCallLogger,
+    connect_mcp,
+    print_message_trail,
+    run_agents_parallel,
+    wrap_with_retry,
+)
+from dwagents.tools.example_tools import calculator, web_search
+
+
+async def main():
+    prompts = {
+        "a": "What's the sum of the first 20 prime numbers?",
+        "b": "Briefly explain the halting problem in one paragraph.",
+    }
+
+    # Optional — pull tools from one or more MCP servers instead of/on top of
+    # bundled tools. Omit and just pass local tools if you don't need MCP.
+    # mcp_tools = await connect_mcp({"files": {"transport": "streamable_http", "url": "…/mcp"}})
+    # mcp_tools = [wrap_with_retry(t) for t in mcp_tools]
+
+    results = await run_agents_parallel(
+        prompts,
+        tools=[web_search, calculator],
+        system_prompt="You are a helpful assistant. Use tools when useful.",
+        callbacks_factory=lambda name: [ToolCallLogger(name)],
+    )
+    for name, result in results.items():
+        if isinstance(result, Exception):
+            print(f"[{name}] FAILED: {result}")
+            continue
+        print_message_trail(name, result["messages"])
+
+
+asyncio.run(main())
+```
+
+`ToolCallLogger` prints each LLM turn, tool call, and tool result prefixed with the agent name so concurrent activity stays legible. `print_message_trail` is a post-run walker that shows the full ordered message history per agent.
+
+See `examples/parallel_agents.py` for a runnable template that loads prompt files from a directory and is easy to point at your own MCP server.
+
+### Command-line runner
+
+For the common case — "run every prompt file in a directory, in parallel, with logging" — there's a bundled CLI. After installing the package, it's on your `PATH` as `dwagents`:
+
+```bash
+# Runs with bundled example_tools (web_search, calculator)
+dwagents run --prompts-dir examples/prompts
+
+# Point at one or more MCP servers (repeat --mcp-server for multiple)
+dwagents run \
+    --prompts-dir examples/prompts \
+    --mcp-server files=https://my.mcp.server/mcp \
+    --system-prompt-file my_system_prompt.txt \
+    --completion-window 1h
+```
+
+The CLI wires `ToolCallLogger` by default and prints a full message trail per agent. It's the fastest way to see whether a new MCP server, prompt set, or model is behaving. For anything beyond its shape, copy `examples/parallel_agents.py` and edit directly.
+
+If a remote MCP server needs authentication, pass the bearer token via env var (recommended — doesn't leak into shell history) or flag, or use `--mcp-header` for non-bearer schemes. The `NAME` matches the name used in `--mcp-server NAME=URL` and binds credentials to that specific server:
+
+```bash
+# Safer: token from env, URL on the command line.
+export DWAGENTS_MCP_BEARER_FILES="secret-token"
+dwagents run --prompts-dir examples/prompts \
+    --mcp-server files=https://mcp.example.com/mcp
+
+# Or inline (leaks into shell history / ps output):
+dwagents run --prompts-dir examples/prompts \
+    --mcp-server files=https://mcp.example.com/mcp \
+    --mcp-bearer-token files=secret-token
+
+# Arbitrary headers for non-bearer schemes:
+dwagents run --prompts-dir examples/prompts \
+    --mcp-server crm=https://mcp.example.com/crm \
+    --mcp-header crm=X-API-Key:abcdef
+```
 
 ### Basic agent with tools
 
@@ -53,6 +146,7 @@ def calculator(expression: str) -> str:
     Args:
         expression: A math expression like '2 + 2' or '100 / 7'.
     """
+    # Guard eval by stripping builtins so the tool can only do arithmetic.
     result = eval(expression, {"__builtins__": {}})
     return str(result)
 
@@ -132,36 +226,25 @@ result = agent.invoke({
 
 ### Using tools from an MCP server
 
-Connect to any MCP server and use its tools as agent tools. This example uses a stdio server, but HTTP (`streamable_http`) and SSE (`sse`) transports also work.
+Connect to any MCP server and use its tools as agent tools. For HTTP-based MCP servers you can use the bundled `connect_mcp` helper — it wraps `MultiServerMCPClient` with a connect-time retry loop and pairs well with `wrap_with_retry` for per-tool resilience:
 
 ```python
 import asyncio
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from dwagents import create_supervisor
+from dwagents import connect_mcp, create_supervisor, wrap_with_retry
 
 
 async def main():
-    client = MultiServerMCPClient(
-        {
-            "filesystem": {
-                "transport": "stdio",
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
-            },
-        }
-    )
-    tools = await client.get_tools()
+    tools = await connect_mcp({
+        "files": {"transport": "streamable_http", "url": "https://my.mcp.server/mcp"},
+    })
+    tools = [wrap_with_retry(t) for t in tools]  # transient errors retry; terminal ones surface as "Error: …"
 
     agent = create_supervisor(
         tools=tools,
-        system_prompt=(
-            "You are a file management assistant. "
-            "Use the filesystem tools to read, write, and organize files."
-        ),
+        system_prompt="You have access to filesystem tools over MCP.",
     )
-
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "List the files in /tmp/workspace and summarize any .txt files"}]
+    result = await agent.ainvoke({
+        "messages": [{"role": "user", "content": "List files in /data and summarise the first .txt"}]
     })
     print(result["messages"][-1].content)
 
@@ -169,10 +252,11 @@ async def main():
 asyncio.run(main())
 ```
 
-You can connect to multiple MCP servers at once and mix MCP tools with regular tools:
+For stdio-based MCP servers, or when you want full control, use `MultiServerMCPClient` directly. The example below mixes stdio and `streamable_http` transports, adds a plain tool, and shows how to pass a bearer token via `headers` for authenticated servers (SSE is also supported via `"transport": "sse"`):
 
 ```python
 import asyncio
+import os
 from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from dwagents import create_supervisor
@@ -180,12 +264,7 @@ from dwagents import create_supervisor
 
 @tool
 def notify_slack(channel: str, message: str) -> str:
-    """Post a message to a Slack channel.
-
-    Args:
-        channel: The Slack channel name.
-        message: The message to post.
-    """
+    """Post a message to a Slack channel."""
     return f"Posted to #{channel}"
 
 
@@ -197,9 +276,11 @@ async def main():
                 "command": "npx",
                 "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/data"],
             },
-            "database": {
+            "crm": {
                 "transport": "streamable_http",
-                "url": "http://localhost:8080/mcp",
+                "url": "https://mcp.example.com/crm",
+                # Bearer-token auth: set MCP_CRM_TOKEN in the environment.
+                "headers": {"Authorization": f"Bearer {os.environ.get('MCP_CRM_TOKEN', '')}"},
             },
         }
     )
@@ -207,72 +288,16 @@ async def main():
 
     agent = create_supervisor(
         tools=mcp_tools + [notify_slack],
-        system_prompt="You are a data ops agent with access to files, a database, and Slack.",
+        system_prompt="You can read files, query the CRM, and post to Slack.",
     )
 
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "Check the CSV files for anomalies, query the database for context, and post a summary to #data-alerts"}]
+    result = await agent.ainvoke({
+        "messages": [{"role": "user", "content": "Check the CSV files and notify #data-alerts of anything odd."}]
     })
     print(result["messages"][-1].content)
 
 
 asyncio.run(main())
-```
-
-### Streamable HTTP with bearer token authentication
-
-When connecting to a remote MCP server over HTTP that requires authentication, pass a bearer token in the `headers` field:
-
-```python
-import asyncio
-import os
-from langchain_mcp_adapters.client import MultiServerMCPClient
-from dwagents import create_supervisor
-
-
-async def main():
-    client = MultiServerMCPClient(
-        {
-            "inventory": {
-                "transport": "streamable_http",
-                "url": "https://mcp.example.com/inventory",
-                "headers": {
-                    "Authorization": f"Bearer {os.environ['MCP_INVENTORY_TOKEN']}",
-                },
-            },
-            "crm": {
-                "transport": "streamable_http",
-                "url": "https://mcp.example.com/crm",
-                "headers": {
-                    "Authorization": f"Bearer {os.environ['MCP_CRM_TOKEN']}",
-                },
-            },
-        }
-    )
-    tools = await client.get_tools()
-
-    agent = create_supervisor(
-        tools=tools,
-        system_prompt=(
-            "You are a supply chain agent. Use the inventory tools to check "
-            "stock levels and the CRM tools to look up customer orders."
-        ),
-    )
-
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "Check if order #4521 can be fulfilled from current stock"}]
-    })
-    print(result["messages"][-1].content)
-
-
-asyncio.run(main())
-```
-
-Set the tokens as environment variables:
-
-```bash
-export MCP_INVENTORY_TOKEN="your-inventory-api-token"
-export MCP_CRM_TOKEN="your-crm-api-token"
 ```
 
 ### Multi-agent with subagents
@@ -332,7 +357,7 @@ result = agent.invoke({
 })
 ```
 
-Each subagent gets its own `ChatDoublewordBatch` instance, so batch windows are independent.
+Each subagent that doesn't specify its own `model` reuses the supervisor's `ChatDoublewordBatch`, so all their LLM calls collate into the same batch window.
 
 ### Overriding model settings
 
@@ -375,8 +400,10 @@ This gives 50-75% cost savings compared to real-time API calls. The trade-off is
 ## Tests
 
 ```bash
-pytest tests/ -v
+pytest -v
 ```
+
+(`testpaths = ["tests"]` is configured in `pyproject.toml`, so `pytest` alone picks up the test suite.)
 
 ## Docker Container
 

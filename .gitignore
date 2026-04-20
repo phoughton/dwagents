@@ -134,3 +134,5 @@ ttylog
 output/
 bug_reports/
 examples/
+example_xml*
+.claude

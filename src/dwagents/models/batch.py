@@ -17,6 +17,9 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, PrivateAttr
 
 from dwagents.config import settings
+from dwagents.models._openai_compat import install_patch as _install_openai_compat
+
+_install_openai_compat()
 
 
 def _messages_to_openai(messages: list[BaseMessage]) -> list[dict[str, Any]]:
@@ -121,7 +124,7 @@ class ChatDoublewordBatch(BaseChatModel):
     _client: BatchOpenAI | None = PrivateAttr(default=None)
     _tools: list[dict[str, Any]] = PrivateAttr(default_factory=list)
 
-    def __init__(self, **kwargs):
+    def __init__(self, *, client: BatchOpenAI | None = None, **kwargs):
         # Apply defaults from settings for any missing values
         kwargs.setdefault("model_name", settings.model)
         kwargs.setdefault("api_key", settings.api_key)
@@ -131,6 +134,8 @@ class ChatDoublewordBatch(BaseChatModel):
         kwargs.setdefault("poll_interval_seconds", settings.poll_interval_seconds)
         kwargs.setdefault("completion_window", settings.completion_window)
         super().__init__(**kwargs)
+        if client is not None:
+            self._client = client
 
     def _get_client(self) -> BatchOpenAI:
         if self._client is None:
