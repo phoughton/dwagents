@@ -1,8 +1,10 @@
 # dwagents
 
+> **Unofficial package.** `dwagents` is a community-maintained integration and is **not** an official release from [doubleword.ai](https://doubleword.ai) or the [LangChain Deep Agents](https://github.com/langchain-ai/deepagents) project. It provides support for using both together, but any issues with `dwagents` itself should be filed against this repo — not against the upstream projects.
+
 LangChain Deep Agents with [doubleword.ai](https://doubleword.ai) batch inference. All LLM calls go through doubleword.ai's autobatcher for 50-75% cost savings. Designed for background agents where cost matters more than latency.
 
-Built on [LangChain Deep Agents](https://github.com/langchain-ai/deepagents) and Doubleword.ai's [autobatcher](https://github.com/doublewordai/autobatcher).
+Built on [LangChain Deep Agents](https://github.com/langchain-ai/deepagents) and Doubleword.ai's [autobatcher](https://github.com/doublewordai/autobatcher). Neither project endorses or maintains this package.
 
 ## Installation
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+import io
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -390,3 +393,67 @@ class TestMainRoutesToRun:
             rc = main(["run", "--prompts-dir", str(tmp_path)])
 
         assert rc == 1
+
+
+class TestHelpOutput:
+    """`--help` and `--version` output. Guards against regressions in the
+    top-level description, epilog examples, argument-group layout, and the
+    version flag."""
+
+    @staticmethod
+    def _run_subparser_help() -> str:
+        parser = _build_parser()
+        # Reach into subparsers to format the `run` subcommand's help
+        # without actually invoking argparse's SystemExit path.
+        subparsers_action = next(
+            a for a in parser._actions if isinstance(a, argparse._SubParsersAction)  # type: ignore[attr-defined]
+        )
+        return subparsers_action.choices["run"].format_help()
+
+    def test_top_level_help_lists_run_and_version_and_points_to_examples(self):
+        help_text = _build_parser().format_help()
+        assert "run" in help_text
+        assert "--version" in help_text
+        assert "examples/parallel_agents.py" in help_text
+        assert "quick start" in help_text
+
+    def test_run_help_has_argument_groups(self):
+        help_text = self._run_subparser_help()
+        assert "input" in help_text
+        assert "tools (MCP)" in help_text
+        assert "agent runtime" in help_text
+        assert "model & batching" in help_text
+
+    def test_run_help_has_worked_examples(self):
+        help_text = self._run_subparser_help()
+        assert "examples:" in help_text
+        # The README-derived worked example with --mcp-server NAME=URL.
+        assert "--mcp-server files=" in help_text
+        assert "DWAGENTS_MCP_BEARER_FILES" in help_text
+
+    def test_run_help_mentions_builtin_defaults(self):
+        help_text = self._run_subparser_help()
+        # Default system prompt + fallback tools should be discoverable here.
+        assert "built-in assistant prompt" in help_text
+        assert "web_search" in help_text and "calculator" in help_text
+
+    def test_run_help_has_metavars(self):
+        help_text = self._run_subparser_help()
+        # Spot-check a few metavars we added.
+        assert "--prompts-dir PATH" in help_text
+        assert "--api-key KEY" in help_text
+        assert "--completion-window WINDOW" in help_text
+
+    def test_version_flag_prints_version_and_exits_zero(self):
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as exc, redirect_stdout(buf), redirect_stderr(buf):
+            main(["--version"])
+        assert exc.value.code == 0
+        assert buf.getvalue().startswith("dwagents ")
+
+    def test_help_flag_exits_zero(self):
+        buf = io.StringIO()
+        with pytest.raises(SystemExit) as exc, redirect_stdout(buf), redirect_stderr(buf):
+            main(["--help"])
+        assert exc.value.code == 0
+        assert "dwagents" in buf.getvalue()

@@ -19,6 +19,7 @@ import os
 import re
 import sys
 from collections.abc import Mapping
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant. Use the tools available to you to complete "
     "the user's task. When you're done, summarise what you did."
 )
+
+
+def _get_version() -> str:
+    try:
+        return metadata.version("dwagents")
+    except metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def _parse_mcp_server_specs(
@@ -232,75 +240,157 @@ async def _run(args: argparse.Namespace) -> int:
     return exit_code
 
 
+_TOP_LEVEL_DESCRIPTION = (
+    "Run parallel batched LangChain deep agents on doubleword.ai inference.\n"
+    "\n"
+    "One agent is started per prompt file in a directory. All agents share\n"
+    "the same tools and system prompt, and their LLM calls are batched\n"
+    "together through a single doubleword.ai batch window with per-agent\n"
+    "tool-call logging and a post-run message trail."
+)
+
+_TOP_LEVEL_EPILOG = (
+    "quick start:\n"
+    "  dwagents run --prompts-dir examples/prompts\n"
+    "\n"
+    "Run 'dwagents run --help' for the full list of run options.\n"
+    "For custom wiring beyond this CLI, copy examples/parallel_agents.py."
+)
+
+_RUN_DESCRIPTION = (
+    "Run one agent per prompt file in a directory, in parallel.\n"
+    "\n"
+    "Prompts: each .txt or .md file under --prompts-dir becomes one agent,\n"
+    "with the file's contents as that agent's user prompt.\n"
+    "\n"
+    "System prompt: if neither --system-prompt nor --system-prompt-file is\n"
+    "given, a built-in default 'You are a helpful assistant...' prompt is\n"
+    "used.\n"
+    "\n"
+    "Tools: if no --mcp-server is given, the agents fall back to the\n"
+    "built-in example tools (web_search, calculator) so the CLI does\n"
+    "something useful out of the box.\n"
+    "\n"
+    "Settings precedence: CLI flag > env var > built-in default."
+)
+
+_RUN_EPILOG = (
+    "examples:\n"
+    "  # Minimal — uses built-in web_search + calculator tools.\n"
+    "  dwagents run --prompts-dir examples/prompts\n"
+    "\n"
+    "  # Real MCP server with a shared system prompt and 1h batch window.\n"
+    "  dwagents run \\\n"
+    "      --prompts-dir examples/prompts \\\n"
+    "      --mcp-server files=https://my.mcp.server/mcp \\\n"
+    "      --system-prompt-file my_system_prompt.txt \\\n"
+    "      --completion-window 1h\n"
+    "\n"
+    "  # MCP with bearer auth via env var (safer than --mcp-bearer-token).\n"
+    "  export DWAGENTS_MCP_BEARER_FILES='secret-token'\n"
+    "  dwagents run --prompts-dir examples/prompts \\\n"
+    "      --mcp-server files=https://mcp.example.com/mcp"
+)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="dwagents",
-        description=(
-            "Run parallel batched LangChain deep agents on doubleword.ai "
-            "inference, with optional MCP tools."
-        ),
+        description=_TOP_LEVEL_DESCRIPTION,
+        epilog=_TOP_LEVEL_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"dwagents {_get_version()}",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run = subparsers.add_parser(
         "run",
         help="Run one agent per prompt file in a directory, in parallel.",
+        description=_RUN_DESCRIPTION,
+        epilog=_RUN_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    run.add_argument(
+
+    input_group = run.add_argument_group(
+        "input",
+        "Prompts and the system prompt shared by every agent.",
+    )
+    input_group.add_argument(
         "--prompts-dir",
         required=True,
+        metavar="PATH",
         help="Directory containing one .txt or .md prompt file per agent.",
     )
-    prompt_group = run.add_mutually_exclusive_group()
+    prompt_group = input_group.add_mutually_exclusive_group()
     prompt_group.add_argument(
         "--system-prompt",
         default=None,
-        help="System prompt text shared by every agent.",
+        metavar="TEXT",
+        help=(
+            "System prompt text shared by every agent "
+            "(default: built-in assistant prompt)."
+        ),
     )
     prompt_group.add_argument(
         "--system-prompt-file",
         default=None,
-        help="Path to a file whose contents become the shared system prompt.",
+        metavar="PATH",
+        help=(
+            "Path to a file whose contents become the shared system prompt "
+            "(default: built-in assistant prompt)."
+        ),
     )
-    run.add_argument(
+
+    mcp_group = run.add_argument_group(
+        "tools (MCP)",
+        "Wire agents to MCP servers. If no --mcp-server is given, agents\n"
+        "fall back to the built-in web_search + calculator tools. Prefer\n"
+        "env vars for secrets — CLI flags can leak into shell history\n"
+        "and `ps` output.",
+    )
+    mcp_group.add_argument(
         "--mcp-server",
         action="append",
         default=[],
         metavar="NAME=URL",
         help=(
-            "MCP server to connect to, as NAME=URL. Repeat for multiple "
-            "servers. Uses streamable_http transport. If omitted, the CLI "
-            "falls back to the built-in example tools."
+            "MCP server to connect to (streamable_http transport). "
+            "Repeatable."
         ),
     )
-    run.add_argument(
+    mcp_group.add_argument(
         "--mcp-bearer-token",
         action="append",
         default=[],
         metavar="NAME=TOKEN",
         help=(
-            "Bearer token for a named --mcp-server (adds Authorization: Bearer "
-            "<token>). Repeatable. Prefer the DWAGENTS_MCP_BEARER_<NAME> env "
-            "var — CLI flags can leak into shell history and `ps` output."
+            "Bearer token for a named --mcp-server; adds 'Authorization: "
+            "Bearer <token>'. Repeatable. "
+            "(env: DWAGENTS_MCP_BEARER_<NAME>, preferred.)"
         ),
     )
-    run.add_argument(
+    mcp_group.add_argument(
         "--mcp-header",
         action="append",
         default=[],
         metavar="NAME=KEY:VALUE",
         help=(
-            "Arbitrary HTTP header for a named --mcp-server, as "
-            "NAME=KEY:VALUE. Repeatable. Overrides --mcp-bearer-token if it "
-            "also sets Authorization."
+            "Arbitrary HTTP header for a named --mcp-server. Repeatable. "
+            "Overrides --mcp-bearer-token on the same header key."
         ),
     )
-    run.add_argument(
+
+    runtime_group = run.add_argument_group("agent runtime")
+    runtime_group.add_argument(
         "--no-filesystem-backend",
         action="store_true",
         help=(
             "Disable the deepagents FilesystemBackend (read_file/write_file "
-            "will hit an in-memory virtual filesystem instead of real disk)."
+            "hit an in-memory virtual filesystem instead of real disk)."
         ),
     )
 
@@ -308,49 +398,60 @@ def _build_parser() -> argparse.ArgumentParser:
     # env var; anything left unset falls through to the env var or built-in
     # default via ChatDoublewordBatch.__init__.
     model_group = run.add_argument_group(
-        "model settings",
-        "Override DOUBLEWORD_* env vars. CLI flag > env var > built-in default.",
+        "model & batching",
+        "Override DOUBLEWORD_* env vars. Precedence: CLI flag > env var >\n"
+        "built-in default. Prefer env vars for secrets.",
     )
     model_group.add_argument(
         "--api-key",
         default=None,
-        help=(
-            "doubleword.ai API key. Prefer the DOUBLEWORD_API_KEY env var — "
-            "CLI flags can leak into shell history and `ps` output."
-        ),
+        metavar="KEY",
+        help="doubleword.ai API key (env: DOUBLEWORD_API_KEY, preferred).",
     )
     model_group.add_argument(
         "--model",
         default=None,
-        help="Model name (overrides DOUBLEWORD_MODEL).",
+        metavar="NAME",
+        help="Model name (env: DOUBLEWORD_MODEL).",
     )
     model_group.add_argument(
         "--base-url",
         default=None,
-        help="API base URL (overrides DOUBLEWORD_BASE_URL).",
+        metavar="URL",
+        help="API base URL (env: DOUBLEWORD_BASE_URL).",
     )
     model_group.add_argument(
         "--batch-window-seconds",
         type=float,
         default=None,
-        help="Seconds to accumulate requests before flushing a batch (overrides DOUBLEWORD_BATCH_WINDOW_SECONDS).",
+        help=(
+            "Seconds to accumulate requests before flushing a batch "
+            "(env: DOUBLEWORD_BATCH_WINDOW_SECONDS)."
+        ),
     )
     model_group.add_argument(
         "--batch-size",
         type=int,
         default=None,
-        help="Max requests per batch (overrides DOUBLEWORD_BATCH_SIZE).",
+        help="Max requests per batch (env: DOUBLEWORD_BATCH_SIZE).",
     )
     model_group.add_argument(
         "--poll-interval-seconds",
         type=float,
         default=None,
-        help="Seconds between batch-status polls (overrides DOUBLEWORD_POLL_INTERVAL_SECONDS).",
+        help=(
+            "Seconds between batch-status polls "
+            "(env: DOUBLEWORD_POLL_INTERVAL_SECONDS)."
+        ),
     )
     model_group.add_argument(
         "--completion-window",
         default=None,
-        help="Batch completion window, e.g. '1h' or '24h' (overrides DOUBLEWORD_COMPLETION_WINDOW).",
+        metavar="WINDOW",
+        help=(
+            "Batch completion window, e.g. '1h' or '24h' "
+            "(env: DOUBLEWORD_COMPLETION_WINDOW)."
+        ),
     )
 
     return parser
