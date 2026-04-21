@@ -9,7 +9,10 @@ Built on [LangChain Deep Agents](https://github.com/langchain-ai/deepagents) and
 ## Installation
 
 ```bash
-# From source (until the package is published to PyPI):
+# From PyPI:
+pip install dwagents
+
+# Or from source:
 pip install git+https://github.com/phoughton/dwagents.git
 
 # For development (after cloning the repo):
@@ -124,6 +127,23 @@ dwagents run --prompts-dir examples/prompts \
     --mcp-server crm=https://mcp.example.com/crm \
     --mcp-header crm=X-API-Key:abcdef
 ```
+
+#### Local command tools
+
+Expose a local CLI program as an agent tool with `--tool-command NAME=COMMAND`. The declared command and any agent-supplied `args` string are both tokenised with `shlex.split` and run via `subprocess` with `shell=False` — shell metacharacters (`|`, `>`, `*`, …) are **not** interpreted. Composes with `--mcp-server`.
+
+```bash
+# Expose git and ripgrep as tools; let the agents drive them.
+dwagents run --prompts-dir examples/prompts \
+    --tool-command git_log='git log --oneline -n 20' \
+    --tool-command rg='rg --json' \
+    --tool-command-description rg="Structured ripgrep search. Pass '-n PATTERN PATH' via args."
+```
+
+- `NAME` must be a valid Python identifier (e.g. `git_log`, not `git-log`).
+- Agent-supplied arguments arrive through a single `args` string, which is appended to the declared command's argv.
+- Per-tool timeout defaults to 30 s; override with `--tool-command-timeout NAME=SECONDS`.
+- If you need pipes, redirection, or globs, wrap in a shell explicitly: `--tool-command pipeline="sh -c 'git log | head'"`.
 
 ### Basic agent with tools
 

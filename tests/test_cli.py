@@ -380,6 +380,66 @@ class TestMainRoutesToRun:
             "completion_window": "1h",
         }
 
+    def test_tool_command_flag_reaches_runner_as_tool(self, tmp_path):
+        (tmp_path / "a.md").write_text("prompt one")
+
+        captured: dict = {}
+
+        async def _fake_runner(prompts, **kwargs):
+            captured["tool_names"] = [t.name for t in kwargs["tools"]]
+            return {"a": {"messages": []}}
+
+        with patch(
+            "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
+        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+            MockBackend.return_value = MagicMock()
+            rc = main([
+                "run",
+                "--prompts-dir", str(tmp_path),
+                "--tool-command", "echo=echo hi",
+                "--tool-command-description", "echo=Say hi.",
+            ])
+
+        assert rc == 0
+        assert captured["tool_names"] == ["echo"]
+
+    def test_tool_command_composes_with_mcp(self, tmp_path):
+        (tmp_path / "a.md").write_text("prompt one")
+
+        fake_tool = MagicMock()
+        fake_tool.name = "remote_tool"
+        wrapped = MagicMock()
+        wrapped.name = "remote_tool"
+
+        captured: dict = {}
+
+        async def _fake_connect(servers, **kwargs):
+            return [fake_tool]
+
+        async def _fake_runner(prompts, **kwargs):
+            captured["tool_names"] = [t.name for t in kwargs["tools"]]
+            return {"a": {"messages": []}}
+
+        with patch(
+            "dwagents.cli.connect_mcp", new=AsyncMock(side_effect=_fake_connect)
+        ), patch(
+            "dwagents.cli.wrap_with_retry", return_value=wrapped
+        ), patch(
+            "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
+        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+            MockBackend.return_value = MagicMock()
+            rc = main([
+                "run",
+                "--prompts-dir", str(tmp_path),
+                "--mcp-server", "s=http://x/",
+                "--tool-command", "echo=echo hi",
+            ])
+
+        assert rc == 0
+        # MCP tool comes first (MCP branch runs first in _resolve_tools);
+        # command tool follows. Both must be present.
+        assert captured["tool_names"] == ["remote_tool", "echo"]
+
     def test_run_returns_nonzero_on_agent_failure(self, tmp_path):
         (tmp_path / "a.md").write_text("prompt one")
 
@@ -421,8 +481,17 @@ class TestHelpOutput:
         help_text = self._run_subparser_help()
         assert "input" in help_text
         assert "tools (MCP)" in help_text
+        assert "tools (local commands)" in help_text
         assert "agent runtime" in help_text
         assert "model & batching" in help_text
+
+    def test_run_help_has_local_commands_flags(self):
+        help_text = self._run_subparser_help()
+        assert "--tool-command NAME=COMMAND" in help_text
+        assert "--tool-command-description NAME=TEXT" in help_text
+        assert "--tool-command-timeout NAME=SECONDS" in help_text
+        # Safety note from the group description.
+        assert "shlex.split" in help_text
 
     def test_run_help_has_worked_examples(self):
         help_text = self._run_subparser_help()

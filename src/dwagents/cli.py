@@ -181,6 +181,7 @@ def _resolve_system_prompt(args: argparse.Namespace) -> str:
 
 
 async def _resolve_tools(args: argparse.Namespace) -> list[BaseTool]:
+    tools: list[BaseTool] = []
     if args.mcp_server:
         server_names = {
             spec.split("=", 1)[0].strip()
@@ -197,11 +198,25 @@ async def _resolve_tools(args: argparse.Namespace) -> list[BaseTool]:
             args.mcp_server, headers_by_name=headers_by_name
         )
         raw = await connect_mcp(servers)
-        return [wrap_with_retry(t) for t in raw]
-    # No MCP configured — fall back to the built-in example tools so the CLI
-    # still does *something* useful out of the box.
-    from dwagents.tools.example_tools import calculator, web_search
-    return [web_search, calculator]
+        tools.extend(wrap_with_retry(t) for t in raw)
+    if args.tool_command:
+        # Local commands deliberately skip wrap_with_retry: a failing command
+        # usually fails deterministically (bad args, missing binary), and
+        # retrying would mask bugs. Errors come back as strings already.
+        from dwagents.tools.commands import build_command_tools
+        tools.extend(
+            build_command_tools(
+                args.tool_command,
+                descriptions=args.tool_command_description,
+                timeouts=args.tool_command_timeout,
+            )
+        )
+    if not tools:
+        # Nothing configured — fall back to the built-in example tools so the
+        # CLI still does *something* useful out of the box.
+        from dwagents.tools.example_tools import calculator, web_search
+        tools = [web_search, calculator]
+    return tools
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -267,9 +282,10 @@ _RUN_DESCRIPTION = (
     "given, a built-in default 'You are a helpful assistant...' prompt is\n"
     "used.\n"
     "\n"
-    "Tools: if no --mcp-server is given, the agents fall back to the\n"
-    "built-in example tools (web_search, calculator) so the CLI does\n"
-    "something useful out of the box.\n"
+    "Tools: MCP servers (--mcp-server) and local commands (--tool-command)\n"
+    "compose — you can pass either, both, or neither. If neither is given,\n"
+    "the agents fall back to the built-in example tools (web_search,\n"
+    "calculator) so the CLI does something useful out of the box.\n"
     "\n"
     "Settings precedence: CLI flag > env var > built-in default."
 )
@@ -289,7 +305,13 @@ _RUN_EPILOG = (
     "  # MCP with bearer auth via env var (safer than --mcp-bearer-token).\n"
     "  export DWAGENTS_MCP_BEARER_FILES='secret-token'\n"
     "  dwagents run --prompts-dir examples/prompts \\\n"
-    "      --mcp-server files=https://mcp.example.com/mcp"
+    "      --mcp-server files=https://mcp.example.com/mcp\n"
+    "\n"
+    "  # Local commands as tools (shell=False; args are shlex-split).\n"
+    "  dwagents run --prompts-dir examples/prompts \\\n"
+    "      --tool-command git_log='git log --oneline -n 20' \\\n"
+    "      --tool-command rg='rg --json' \\\n"
+    "      --tool-command-description rg=\"Structured ripgrep search.\""
 )
 
 
@@ -381,6 +403,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Arbitrary HTTP header for a named --mcp-server. Repeatable. "
             "Overrides --mcp-bearer-token on the same header key."
+        ),
+    )
+
+    cmd_group = run.add_argument_group(
+        "tools (local commands)",
+        "Expose local command-line programs as agent tools. Commands run\n"
+        "with shell=False; both the declared command and any agent-supplied\n"
+        "'args' string are tokenised with shlex.split — shell metacharacters\n"
+        "(|, >, *, ...) are NOT interpreted. Wrap in `sh -c '...'` explicitly\n"
+        "if you need shell behaviour.",
+    )
+    cmd_group.add_argument(
+        "--tool-command",
+        action="append",
+        default=[],
+        metavar="NAME=COMMAND",
+        help=(
+            "Expose a local command as a tool. NAME must be a valid Python "
+            "identifier. The agent supplies extra arguments via a single "
+            "'args' string. Repeatable."
+        ),
+    )
+    cmd_group.add_argument(
+        "--tool-command-description",
+        action="append",
+        default=[],
+        metavar="NAME=TEXT",
+        help=(
+            "LLM-facing description for a named --tool-command. "
+            "Repeatable. (Default: a generic description of the command.)"
+        ),
+    )
+    cmd_group.add_argument(
+        "--tool-command-timeout",
+        action="append",
+        default=[],
+        metavar="NAME=SECONDS",
+        help=(
+            "Per-tool timeout in seconds for a named --tool-command "
+            "(default: 30). Repeatable."
         ),
     )
 
