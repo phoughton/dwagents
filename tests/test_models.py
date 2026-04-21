@@ -7,7 +7,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from dwagents.models.batch import (
     ChatDoublewordBatch,
+    EmptyLLMResponseError,
     _completion_to_chat_result,
+    _is_empty_generation,
     _messages_to_openai,
     _parse_tool_calls,
 )
@@ -237,5 +239,145 @@ class TestChatDoublewordBatch:
         assert kwargs["model"] == "gpt-4o"
         assert kwargs["messages"] == [{"role": "user", "content": "Hello"}]
         assert kwargs["stop"] == ["END"]
+
+
+class TestEmptyResponseRetry:
+    """An empty AIMessage (no content, no tool_calls) silently terminates
+    LangGraph's agent loop. _agenerate must retry once and raise on persistent
+    emptiness so sibling agents can keep running and the failure surfaces."""
+
+    @staticmethod
+    def _empty_completion():
+        c = MagicMock()
+        c.choices = [
+            MagicMock(
+                message=MagicMock(content=None, tool_calls=None),
+                finish_reason="stop",
+            )
+        ]
+        c.model = "m"
+        c.usage = None
+        return c
+
+    @staticmethod
+    def _good_completion():
+        c = MagicMock()
+        c.choices = [
+            MagicMock(
+                message=MagicMock(content="hello", tool_calls=None),
+                finish_reason="stop",
+            )
+        ]
+        c.model = "m"
+        c.usage = None
+        return c
+
+    @pytest.mark.asyncio
+    async def test_empty_then_success_retries_and_returns(self):
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            side_effect=[self._empty_completion(), self._good_completion()]
+        )
+        model = ChatDoublewordBatch(
+            model_name="m",
+            api_key="k",
+            base_url="http://x/",
+            client=fake_client,
+        )
+
+        result = await model._agenerate([HumanMessage(content="hi")])
+        assert result.generations[0].message.content == "hello"
+        assert fake_client.chat.completions.create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_two_empty_responses_raise(self):
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            side_effect=[self._empty_completion(), self._empty_completion()]
+        )
+        model = ChatDoublewordBatch(
+            model_name="m",
+            api_key="k",
+            base_url="http://x/",
+            client=fake_client,
+        )
+
+        with pytest.raises(EmptyLLMResponseError):
+            await model._agenerate([HumanMessage(content="hi")])
+        assert fake_client.chat.completions.create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_first_response_non_empty_no_retry(self):
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = AsyncMock(
+            return_value=self._good_completion()
+        )
+        model = ChatDoublewordBatch(
+            model_name="m",
+            api_key="k",
+            base_url="http://x/",
+            client=fake_client,
+        )
+
+        await model._agenerate([HumanMessage(content="hi")])
+        assert fake_client.chat.completions.create.await_count == 1
+
+
+class TestIsEmptyGeneration:
+    def test_detects_both_missing(self):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        result = ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="", tool_calls=[]))]
+        )
+        assert _is_empty_generation(result)
+
+    def test_whitespace_only_is_empty(self):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        result = ChatResult(
+            generations=[
+                ChatGeneration(message=AIMessage(content="   \n\t", tool_calls=[]))
+            ]
+        )
+        assert _is_empty_generation(result)
+
+    def test_false_with_content(self):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        result = ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="hi", tool_calls=[]))]
+        )
+        assert not _is_empty_generation(result)
+
+    def test_false_with_tool_calls(self):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        result = ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content="",
+                        tool_calls=[{"id": "1", "name": "f", "args": {}}],
+                    )
+                )
+            ]
+        )
+        assert not _is_empty_generation(result)
+
+    def test_false_with_multimodal_content_list(self):
+        from langchain_core.outputs import ChatGeneration, ChatResult
+
+        result = ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content=[{"type": "text", "text": "hi"}],
+                        tool_calls=[],
+                    )
+                )
+            ]
+        )
+        assert not _is_empty_generation(result)
 
 

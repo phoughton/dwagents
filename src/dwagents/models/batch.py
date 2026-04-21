@@ -22,6 +22,16 @@ from dwagents.models._openai_compat import install_patch as _install_openai_comp
 _install_openai_compat()
 
 
+class EmptyLLMResponseError(RuntimeError):
+    """Raised when the batch LLM returns empty content and no tool calls twice in a row.
+
+    LangGraph's agent loop treats an `AIMessage(content="", tool_calls=[])` as a
+    terminal state and silently exits. `_agenerate` retries once on an empty
+    response; if the second attempt is also empty, this is raised so the failure
+    surfaces instead of the agent stopping silently.
+    """
+
+
 def _messages_to_openai(messages: list[BaseMessage]) -> list[dict[str, Any]]:
     """Convert LangChain messages to OpenAI-format dicts."""
     result = []
@@ -76,6 +86,24 @@ def _parse_tool_calls(raw_tool_calls: list) -> list[dict[str, Any]]:
             "args": args,
         })
     return result
+
+
+def _is_empty_generation(result: ChatResult) -> bool:
+    """True iff the result has no text content and no tool calls.
+
+    LangGraph's tools-edge routes to END whenever `tool_calls` is empty,
+    so an AIMessage with neither content nor tool_calls terminates the
+    agent loop silently — callers need to detect and recover from this.
+    """
+    if not result.generations:
+        return True
+    msg = result.generations[0].message
+    content = msg.content
+    if isinstance(content, str):
+        has_content = bool(content.strip())
+    else:
+        has_content = bool(content)
+    return not has_content and not getattr(msg, "tool_calls", None)
 
 
 def _completion_to_chat_result(completion) -> ChatResult:
@@ -212,11 +240,35 @@ class ChatDoublewordBatch(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs,
     ) -> ChatResult:
-        """Primary async path — sends request through BatchOpenAI."""
+        """Primary async path — sends request through BatchOpenAI.
+
+        Retries once if the backend returns an empty choice (no content,
+        no tool_calls). Without this, LangGraph's agent loop would treat
+        the empty AIMessage as a terminal state and silently exit.
+        """
         client = self._get_client()
         request_kwargs = self._build_request_kwargs(messages, stop, **kwargs)
+
         completion = await client.chat.completions.create(**request_kwargs)
-        return _completion_to_chat_result(completion)
+        result = _completion_to_chat_result(completion)
+        if not _is_empty_generation(result):
+            return result
+
+        if run_manager is not None:
+            await run_manager.on_text(
+                "dwagents: empty LLM response, retrying once", verbose=True
+            )
+        completion = await client.chat.completions.create(**request_kwargs)
+        result = _completion_to_chat_result(completion)
+        if not _is_empty_generation(result):
+            return result
+
+        raise EmptyLLMResponseError(
+            "Batch LLM returned empty content and no tool calls on two "
+            f"consecutive attempts (model={self.model_name}, "
+            f"messages={len(messages)}). This usually indicates a "
+            "transient backend issue; re-running the prompt may succeed."
+        )
 
     async def aclose(self) -> None:
         """Close the underlying BatchOpenAI client."""
