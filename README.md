@@ -31,7 +31,7 @@ Optional settings (with defaults):
 
 ```bash
 export DOUBLEWORD_BASE_URL="https://api.doubleword.ai/v1/"
-export DOUBLEWORD_MODEL="Qwen/Qwen3.5-397B-A17B-FP8"
+export DOUBLEWORD_MODEL="deepseek-ai/DeepSeek-V4-Flash"
 export DOUBLEWORD_BATCH_WINDOW_SECONDS="10.0"
 export DOUBLEWORD_BATCH_SIZE="1000"
 export DOUBLEWORD_POLL_INTERVAL_SECONDS="5.0"
