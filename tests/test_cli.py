@@ -259,14 +259,11 @@ class TestMainRoutesToRun:
 
         with patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("dwagents.cli.FilesystemBackend", create=True):
-            # FilesystemBackend is imported inside _run; patch the module path
-            # where it's actually resolved.
-            with patch(
-                "deepagents.backends.filesystem.FilesystemBackend"
-            ) as MockBackend:
-                MockBackend.return_value = MagicMock()
-                rc = main(["run", "--prompts-dir", str(tmp_path)])
+        ), patch(
+            "dwagents.backends.filesystem.OverwritingFilesystemBackend"
+        ) as MockBackend:
+            MockBackend.return_value = MagicMock()
+            rc = main(["run", "--prompts-dir", str(tmp_path)])
 
         assert rc == 0
 
@@ -297,7 +294,7 @@ class TestMainRoutesToRun:
             "dwagents.cli.wrap_with_retry", return_value=wrapped
         ) as mock_wrap, patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+        ), patch("dwagents.backends.filesystem.OverwritingFilesystemBackend") as MockBackend:
             MockBackend.return_value = MagicMock()
             rc = main(
                 [
@@ -334,7 +331,7 @@ class TestMainRoutesToRun:
             "dwagents.cli.wrap_with_retry", return_value=wrapped
         ), patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+        ), patch("dwagents.backends.filesystem.OverwritingFilesystemBackend") as MockBackend:
             MockBackend.return_value = MagicMock()
             rc = main([
                 "run",
@@ -363,7 +360,7 @@ class TestMainRoutesToRun:
 
         with patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+        ), patch("dwagents.backends.filesystem.OverwritingFilesystemBackend") as MockBackend:
             MockBackend.return_value = MagicMock()
             rc = main([
                 "run",
@@ -391,7 +388,7 @@ class TestMainRoutesToRun:
 
         with patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+        ), patch("dwagents.backends.filesystem.OverwritingFilesystemBackend") as MockBackend:
             MockBackend.return_value = MagicMock()
             rc = main([
                 "run",
@@ -426,7 +423,7 @@ class TestMainRoutesToRun:
             "dwagents.cli.wrap_with_retry", return_value=wrapped
         ), patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+        ), patch("dwagents.backends.filesystem.OverwritingFilesystemBackend") as MockBackend:
             MockBackend.return_value = MagicMock()
             rc = main([
                 "run",
@@ -448,7 +445,7 @@ class TestMainRoutesToRun:
 
         with patch(
             "dwagents.cli.run_agents_parallel", new=AsyncMock(side_effect=_fake_runner)
-        ), patch("deepagents.backends.filesystem.FilesystemBackend") as MockBackend:
+        ), patch("dwagents.backends.filesystem.OverwritingFilesystemBackend") as MockBackend:
             MockBackend.return_value = MagicMock()
             rc = main(["run", "--prompts-dir", str(tmp_path)])
 

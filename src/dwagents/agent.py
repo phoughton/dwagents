@@ -39,7 +39,9 @@ def create_supervisor(
         backend: deepagents backend for the built-in file tools. Defaults to
             deepagents' StateBackend (in-memory virtual FS). Pass
             `deepagents.backends.filesystem.FilesystemBackend()` to have
-            read_file/write_file hit the real disk.
+            read_file/write_file hit the real disk; the dwagents CLI uses
+            `dwagents.backends.filesystem.OverwritingFilesystemBackend` so that
+            `write_file` overwrites existing paths instead of erroring.
         **kwargs: Additional kwargs passed to create_deep_agent.
 
     Returns:

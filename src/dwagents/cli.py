@@ -231,8 +231,8 @@ async def _run(args: argparse.Namespace) -> int:
 
     backend = None
     if not args.no_filesystem_backend:
-        from deepagents.backends.filesystem import FilesystemBackend
-        backend = FilesystemBackend()
+        from dwagents.backends.filesystem import OverwritingFilesystemBackend
+        backend = OverwritingFilesystemBackend()
 
     results = await run_agents_parallel(
         prompts,
